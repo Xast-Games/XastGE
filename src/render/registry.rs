@@ -1,0 +1,278 @@
+use std::{any::TypeId, collections::HashMap};
+
+use ab_glyph::FontRef;
+use bytemuck::Pod;
+use flecs_ecs::addons::Module;
+use flecs_ecs::core::World;
+use flecs_ecs::core::flecs::Singleton;
+use flecs_ecs::macros::Component;
+use image::ImageError;
+use slotmap::{Key, SlotMap};
+
+use crate::render::pipeline::RenderPipelineDescriptor;
+use crate::render::texture::TextureDescriptor;
+use crate::ui::atlas::{Atlas, FontData, FontHandle, atlas_size};
+
+use super::types::*;
+use super::{
+    RenderDevice,
+    buffer::{BufferHandle, BufferStorage},
+    material::Material,
+    pipeline::Pipeline,
+    shader_resource::ShaderResourceLayout,
+    texture::{Texture, TextureHandle},
+};
+
+
+const MISSING_TEXTURE: &[u8] = include_bytes!("../../assets/missing.png");
+
+#[derive(Component)]
+pub struct RenderRegistryModule;
+
+impl Module for RenderRegistryModule {
+    fn module(world: &World) {
+        world.component::<RenderRegistry>().add_trait::<Singleton>();
+        world.set(RenderRegistry::new());
+    }
+}
+
+#[derive(Component, Default)]
+pub struct RenderRegistry {
+    pipelines: HashMap<TypeId, Pipeline>,
+    buffers: SlotMap<BufferHandle, BufferStorage>,
+    textures: SlotMap<TextureHandle, Texture>,
+    fonts: SlotMap<FontHandle, FontData>,
+    placeholder_texture: TextureHandle,
+}
+
+impl RenderRegistry {
+    pub fn new() -> RenderRegistry {
+        RenderRegistry::default()
+    }
+
+    pub fn register_material<M: Material + 'static>(
+        &mut self,
+        render_device: &RenderDevice,
+        global_layouts: &[&ShaderResourceLayout],
+    ) {
+        let material_layout = M::shader_resource_layout(render_device);
+        let mut bindings = Vec::with_capacity(global_layouts.len() + 1);
+        bindings.push(&material_layout);
+        bindings.extend(global_layouts.iter().copied());
+
+        self.pipelines
+            .entry(TypeId::of::<M>())
+            .or_insert(
+                Pipeline::new_render(render_device, &RenderPipelineDescriptor {
+                    shader: M::shader(),
+                    bindings: &bindings,
+                    label: &pretty_type_name::pretty_type_name::<M>(),
+                    vertex_layout: M::vertex_layout(),
+                    surface_formats: &[render_device.surface_format()],
+                    blend_state: M::blend_state(),
+                    depth_write_enabled: M::depth_write_enabled(),
+                    depth_compare: M::depth_compare(),
+                    front_face: M::front_face(),
+                    cull_mode: M::cull_mode(),
+                    topology: M::topology(),
+                })
+            );
+    }
+
+    pub fn get_pipeline<M: Material + 'static>(&self) -> Option<&Pipeline> {
+        self.pipelines.get(&TypeId::of::<M>())
+    }
+
+    pub fn new_buffer<T: Pod>(
+        &mut self,
+        render_device: &RenderDevice,
+        capacity: usize,
+        usage: BufferUsages,
+    ) -> BufferHandle {
+        self.buffers
+            .insert(BufferStorage::new::<T>(render_device, capacity, usage))
+    }
+
+    pub fn get_buffer(&self, handle: BufferHandle) -> Option<&BufferStorage> {
+        self.buffers.get(handle)
+    }
+
+    pub fn get_buffer_mut(&mut self, handle: BufferHandle) -> Option<&mut BufferStorage> {
+        self.buffers.get_mut(handle)
+    }
+
+    pub fn remove_buffer(&mut self, handle: BufferHandle) {
+        if let Some(buff) = self.buffers.remove(handle) {
+            drop(buff);
+        }
+    }
+
+    pub fn new_texture(
+        &mut self,
+        render_device: &RenderDevice,
+        descriptor: TextureDescriptor,
+    ) -> TextureHandle {
+        self.textures
+            .insert(Texture::new(render_device, descriptor))
+    }
+
+    pub fn load_texture(
+        &mut self,
+        render_device: &RenderDevice,
+        path: &str,
+        descriptor: TextureDescriptor,
+    ) -> Result<TextureHandle, ImageError> {
+        let image = image::open(path)?
+            .to_rgba8();
+
+        Ok(self.upload_texture(render_device, &image, descriptor))
+    }
+
+    pub fn load_or_placeholder(
+        &mut self,
+        render_device: &RenderDevice,
+        path: &str,
+        descriptor: TextureDescriptor,
+    ) -> TextureHandle {
+        match self.load_texture(render_device, path, descriptor) {
+            Ok(handle) => handle,
+            Err(e) => {
+                log::warn!("Cannot load texture `{path}`: {e}");
+                self.placeholder_texture(render_device)
+            }
+        }
+    }
+
+    pub fn placeholder_texture(&mut self, render_device: &RenderDevice) -> TextureHandle {
+        if self.placeholder_texture.is_null() {
+            let image = image::load_from_memory(MISSING_TEXTURE)
+                .expect("Embedded missing.png is invalid")
+                .to_rgba8();
+
+            let descriptor = TextureDescriptor {
+                filter: FilterMode::Nearest,
+                label: "Missing".to_owned(),
+                ..Default::default()
+            };
+
+            self.placeholder_texture = self.upload_texture(render_device, &image, descriptor);
+        }
+
+        self.placeholder_texture
+    }
+
+    fn upload_texture(
+        &mut self,
+        render_device: &RenderDevice,
+        image: &image::RgbaImage,
+        mut descriptor: TextureDescriptor,
+    ) -> TextureHandle {
+        descriptor.width = image.width();
+        descriptor.height = image.height();
+
+        let texture = Texture::new(render_device, descriptor);
+        texture.fill(render_device, image);
+
+        self.textures.insert(texture)
+    }
+
+    pub fn load_cubemap(
+        &mut self,
+        render_device: &RenderDevice,
+        paths: [&str; 6],
+        mut descriptor: TextureDescriptor,
+    ) -> Result<TextureHandle, ImageError> {
+        let mut images = Vec::with_capacity(6);
+        for path in paths {
+            let image = image::open(path)?.to_rgba8();
+            images.push(image);
+        }
+
+        descriptor.width = images[0].width();
+        descriptor.height = images[0].height();
+        descriptor.depth = Some(6);
+        descriptor.dimension = TextureDimension::D2;
+        descriptor.view_dimension = TextureViewDimension::Cube;
+
+        let texture = Texture::new(render_device, descriptor);
+
+        for (i, image) in images.iter().enumerate() {
+            texture.fill_layer_rgba8(
+                render_device,
+                i as u32,
+                image.width(),
+                image.height(),
+                image,
+            );
+        }
+
+        Ok(self.textures.insert(texture))
+    }
+
+    pub fn get_texture(&self, handle: TextureHandle) -> Option<&Texture> {
+        self.textures.get(handle)
+    }
+
+    pub fn get_texture_mut(&mut self, handle: TextureHandle) -> Option<&mut Texture> {
+        self.textures.get_mut(handle)
+    }
+
+    pub fn remove_texture(&mut self, handle: TextureHandle) {
+        if let Some(tex) = self.textures.remove(handle) {
+            drop(tex);
+        }
+    }
+
+    pub fn new_font(&mut self, font: FontRef<'static>) -> FontHandle {
+        self.fonts.insert(FontData::new(font))
+    }
+
+    pub fn get_font(&self, handle: FontHandle) -> Option<&FontRef<'static>> {
+        self.fonts.get(handle)
+            .map(|d| &d.font)
+    }
+
+    pub fn remove_font(&mut self, handle: FontHandle) {
+        if let Some(font) = self.fonts.remove(handle) {
+            drop(font);
+        }
+    }
+
+    pub fn add_font_atlas(&mut self, render_device: &RenderDevice, handle: FontHandle, font_size: u32) {
+        if self.fonts.get(handle).is_some() {
+            let Some(atlas_size) = atlas_size(font_size) else {
+                log::error!("Invalid size {} for font atlas", font_size);
+                return;
+            };
+            
+            let texture = self.new_texture(render_device, TextureDescriptor {
+                width: atlas_size as u32,
+                height: atlas_size as u32,
+                label: "Font atlas".to_owned(),
+                filter: FilterMode::Nearest,
+                format: TextureFormat::R8Unorm,
+                ..Default::default()
+            });
+
+            let font_data = self.fonts.get_mut(handle).unwrap();
+            font_data.atlases.register_atlas(font_size, &font_data.font, texture);
+
+            let atlas = self.get_atlas(handle, font_size).unwrap();
+            self.get_texture(texture)
+                .unwrap()
+                .fill(render_device, atlas.image());
+        } else {
+            log::error!("Font handle {:?} does not exist", handle);
+        }
+    }
+
+    pub fn get_atlas(&self, font_handle: FontHandle, font_size: u32) -> Option<&Atlas> {
+        self.fonts.get(font_handle)
+            .and_then(|data| data.atlases.get_atlas(font_size))
+    }
+
+    pub fn get_atlas_nearest(&self, font_handle: FontHandle, font_size: u32) -> Option<&Atlas> {
+        self.fonts.get(font_handle)
+            .and_then(|data| data.atlases.nearest_atlas(font_size))
+    }
+}
