@@ -3,7 +3,7 @@
 
 use bitflags::bitflags;
 use glam::UVec2;
-use image::{ImageBuffer, Pixel};
+use image::{ImageBuffer, Pixel, RgbaImage, imageops::FilterType};
 use slotmap::new_key_type;
 use wgpu::TextureViewDimension;
 use crate::render::registry::RenderRegistry;
@@ -67,6 +67,9 @@ pub struct TextureDescriptor {
     /// Number of mip levels for the texture.
     pub mip_level_count: u32,
     pub view_dimension: TextureViewDimension,
+    pub address_mode: wgpu::AddressMode,
+    pub mipmap_filter: wgpu::FilterMode,
+    pub anisotropy: u16,
     /// A human-readable label for debugging purposes. Displayed, when
     /// error affiliated with the texture occures
     pub label: String,
@@ -84,6 +87,9 @@ impl Default for TextureDescriptor {
             view_dimension: TextureViewDimension::D2,
             format: Texture::DEFAULT_FORMAT,
             mip_level_count: 1,
+            address_mode: wgpu::AddressMode::ClampToEdge,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            anisotropy: 1,
             label: "Unnamed Texture".to_string(),
         }
     }
@@ -166,14 +172,15 @@ impl Texture {
 
         let sampler = render_device.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some(format!("{} Texture Sampler", descriptor.label).as_str()),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            address_mode_u: descriptor.address_mode,
+            address_mode_v: descriptor.address_mode,
+            address_mode_w: descriptor.address_mode,
             mag_filter: descriptor.filter,
             min_filter: descriptor.filter,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: descriptor.mipmap_filter,
             lod_min_clamp: 0.0,
             lod_max_clamp: 100.0,
+            anisotropy_clamp: descriptor.anisotropy.max(1),
             ..Default::default()
         });
 
@@ -222,10 +229,22 @@ impl Texture {
         height: u32,
         data: &[u8],
     ) {
+        self.fill_layer_mip_rgba8(render_device, layer, 0, width, height, data);
+    }
+
+    pub fn fill_layer_mip_rgba8(
+        &self,
+        render_device: &RenderDevice,
+        layer: u32,
+        mip_level: u32,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) {
         render_device.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: self.texture(),
-                mip_level: 0,
+                mip_level,
                 origin: wgpu::Origin3d {
                     x: 0,
                     y: 0,
@@ -269,5 +288,30 @@ impl Texture {
     
     pub fn descriptor(&self) -> &TextureDescriptor {
         &self.descriptor
+    }
+}
+
+pub fn mip_chain(image: &RgbaImage) -> Vec<RgbaImage> {
+    let mut levels = vec![image.clone()];
+    while let Some(last) = levels.last() {
+        if last.width() <= 1 && last.height() <= 1 {
+            break;
+        }
+        let (w, h) = ((last.width() / 2).max(1), (last.height() / 2).max(1));
+        let next = image::imageops::resize(last, w, h, FilterType::Triangle);
+        levels.push(next);
+    }
+    levels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mip_chain_halves_down_to_one_pixel() {
+        let chain = mip_chain(&RgbaImage::new(16, 4));
+        let sizes: Vec<_> = chain.iter().map(|m| (m.width(), m.height())).collect();
+        assert_eq!(sizes, vec![(16, 4), (8, 2), (4, 1), (2, 1), (1, 1)]);
     }
 }

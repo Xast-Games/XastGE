@@ -24,6 +24,7 @@ pub mod types {
         BufferUsages,
         ShaderStages,
         BufferBindingType,
+        AddressMode,
         FilterMode,
         TextureDimension,
         TextureViewDimension,
@@ -141,6 +142,7 @@ impl RenderDevice {
                 depth: None,
                 mip_level_count: 1,
                 label: "Depth Data".to_string(),
+                ..Default::default()
             },
         ));
 

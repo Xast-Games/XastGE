@@ -9,9 +9,15 @@ use std::{
 
 use parking_lot::Mutex;
 
-use crate::mesh::{Mesh, Vertex};
+use crate::mesh::Mesh;
 
-use super::{config::TerrainConfig, mesh::tile_mesh, source::HeightSource, tile::{TileCoord, TileData}};
+use super::{
+    config::TerrainConfig,
+    mesh::{TerrainVertex, tile_mesh},
+    source::HeightSource,
+    splat::SplatRules,
+    tile::{TileCoord, TileData},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
@@ -22,7 +28,7 @@ pub struct Progress {
 pub struct TileBuild {
     pub coord: TileCoord,
     pub tile: TileData,
-    pub mesh: Mesh<Vertex>,
+    pub mesh: Mesh<TerrainVertex>,
 }
 
 struct Finished {
@@ -59,11 +65,13 @@ impl TileJobs {
     pub fn start(
         &mut self,
         config: &TerrainConfig,
+        rules: &SplatRules,
         source: Arc<dyn HeightSource>,
         coords: impl IntoIterator<Item = TileCoord>,
     ) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let config = Arc::new(config.clone());
+        let rules = Arc::new(rules.clone());
 
         self.total = 0;
         self.received = 0;
@@ -74,6 +82,7 @@ impl TileJobs {
             self.total += 1;
 
             let config = config.clone();
+            let rules = rules.clone();
             let source = source.clone();
             let sender = self.sender.clone();
             let current = self.generation.clone();
@@ -82,7 +91,7 @@ impl TileJobs {
                 if current.load(Ordering::Relaxed) != generation {
                     return;
                 }
-                let tile = TileData::generate(&config, coord, source.as_ref());
+                let tile = TileData::generate_with(&config, coord, source.as_ref(), &rules);
 
                 if current.load(Ordering::Relaxed) != generation {
                     return;
@@ -164,7 +173,7 @@ mod tests {
         let mut jobs = TileJobs::default();
         let coords: Vec<_> = (-1..=1).flat_map(|y| (-1..=1).map(move |x| TileCoord::new(x, y))).collect();
 
-        jobs.start(&config(), Arc::new(FlatSource(5.0)), coords.clone());
+        jobs.start(&config(), &SplatRules::default(), Arc::new(FlatSource(5.0)), coords.clone());
         let built = drain(&mut jobs);
 
         let got: HashSet<_> = built.iter().map(|b| b.coord).collect();
@@ -180,8 +189,8 @@ mod tests {
         let old: Vec<_> = (0..8).map(|x| TileCoord::new(x, 100)).collect();
         let new: Vec<_> = (0..3).map(|x| TileCoord::new(x, -100)).collect();
 
-        jobs.start(&config(), Arc::new(FlatSource(1.0)), old);
-        jobs.start(&config(), Arc::new(FlatSource(2.0)), new.clone());
+        jobs.start(&config(), &SplatRules::default(), Arc::new(FlatSource(1.0)), old);
+        jobs.start(&config(), &SplatRules::default(), Arc::new(FlatSource(2.0)), new.clone());
         let built = drain(&mut jobs);
 
         assert!(built.iter().all(|b| b.coord.y == -100));
@@ -191,7 +200,7 @@ mod tests {
     #[test]
     fn empty_request_is_immediately_done() {
         let mut jobs = TileJobs::default();
-        jobs.start(&config(), Arc::new(FlatSource(0.0)), []);
+        jobs.start(&config(), &SplatRules::default(), Arc::new(FlatSource(0.0)), []);
 
         assert!(!jobs.is_busy());
         assert_eq!(jobs.elapsed(), Some(Duration::ZERO));

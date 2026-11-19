@@ -235,6 +235,18 @@ impl Mesh<Vertex> {
 }
 
 #[cfg(feature = "render")]
+impl<V: Send + Sync + 'static> Mesh<V> {
+    pub fn release(&mut self, registry: &mut RenderRegistry) {
+        if let Some(buffer) = self.vertex_buffer.take() {
+            registry.remove_buffer(buffer);
+        }
+        if let Some(buffer) = self.index_buffer.take() {
+            registry.remove_buffer(buffer);
+        }
+    }
+}
+
+#[cfg(feature = "render")]
 impl<V: Pod + Send + Sync + 'static> Drawable for Mesh<V> {
     fn update(&mut self, render_device: &mut RenderDevice, registry: &mut RenderRegistry) {
         if self.vertex_buffer.is_none() {

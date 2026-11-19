@@ -10,7 +10,7 @@ use image::ImageError;
 use slotmap::{Key, SlotMap};
 
 use crate::render::pipeline::RenderPipelineDescriptor;
-use crate::render::texture::TextureDescriptor;
+use crate::render::texture::{TextureDescriptor, mip_chain};
 use crate::ui::atlas::{Atlas, FontData, FontHandle, atlas_size};
 
 use super::types::*;
@@ -174,6 +174,45 @@ impl RenderRegistry {
         texture.fill(render_device, image);
 
         self.textures.insert(texture)
+    }
+
+    pub fn new_texture_array(
+        &mut self,
+        render_device: &RenderDevice,
+        layers: &[image::RgbaImage],
+        mut descriptor: TextureDescriptor,
+    ) -> Option<TextureHandle> {
+        let first = layers.first()?;
+        let (width, height) = first.dimensions();
+        if layers.iter().any(|l| l.dimensions() != (width, height)) {
+            log::error!("Texture array `{}` layers differ in size", descriptor.label);
+            return None;
+        }
+
+        let chains: Vec<Vec<image::RgbaImage>> = layers.iter().map(mip_chain).collect();
+
+        descriptor.width = width;
+        descriptor.height = height;
+        descriptor.depth = Some(layers.len() as u32);
+        descriptor.dimension = TextureDimension::D2;
+        descriptor.view_dimension = TextureViewDimension::D2Array;
+        descriptor.mip_level_count = chains[0].len() as u32;
+
+        let texture = Texture::new(render_device, descriptor);
+        for (layer, chain) in chains.iter().enumerate() {
+            for (mip, image) in chain.iter().enumerate() {
+                texture.fill_layer_mip_rgba8(
+                    render_device,
+                    layer as u32,
+                    mip as u32,
+                    image.width(),
+                    image.height(),
+                    image.as_raw(),
+                );
+            }
+        }
+
+        Some(self.textures.insert(texture))
     }
 
     pub fn load_cubemap(

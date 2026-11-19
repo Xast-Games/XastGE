@@ -1,8 +1,9 @@
 use flecs_ecs::macros::Component;
 use glam::{Quat, Vec2, Vec3};
+use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
-use super::{config::TerrainConfig, source::HeightSource};
+use super::{config::TerrainConfig, source::HeightSource, splat::SplatRules};
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TileCoord {
@@ -62,6 +63,7 @@ pub struct TileData {
     pub coord: TileCoord,
     pub samples: usize,
     pub heights: Box<[u16]>,
+    pub normals: Box<[Vec3]>,
     pub splat: Box<[[u8; 4]]>,
     pub holes: Option<Box<[u8]>>,
     pub height_bounds: HeightBounds,
@@ -70,24 +72,81 @@ pub struct TileData {
 
 impl TileData {
     pub fn generate(config: &TerrainConfig, coord: TileCoord, source: &dyn HeightSource) -> TileData {
+        Self::generate_with(config, coord, source, &SplatRules::default())
+    }
+
+    pub fn generate_with(
+        config: &TerrainConfig,
+        coord: TileCoord,
+        source: &dyn HeightSource,
+        rules: &SplatRules,
+    ) -> TileData {
         let samples = config.samples();
+        let cell = config.cell_size();
+        let reach = ((rules.feature_radius / cell).round() as usize).clamp(1, 64);
+        let apron = reach as i64;
+        let padded = samples + 2 * reach;
         let cells = config.cells as i64;
         let cell_size = config.tile_size as f64 / config.cells as f64;
 
-        let mut heights = vec![0u16; samples * samples];
-        heights.par_chunks_mut(samples).enumerate().for_each(|(j, row)| {
-            let gz = coord.y as i64 * cells + j as i64;
-            for (i, sample) in row.iter_mut().enumerate() {
-                let gx = coord.x as i64 * cells + i as i64;
+        let mut grid = vec![0u16; padded * padded];
+        grid.par_chunks_mut(padded).enumerate().for_each(|(pj, row)| {
+            let gz = coord.y as i64 * cells + pj as i64 - apron;
+            for (pi, sample) in row.iter_mut().enumerate() {
+                let gx = coord.x as i64 * cells + pi as i64 - apron;
                 *sample = config.quantize(source.height(gx as f64 * cell_size, gz as f64 * cell_size));
             }
         });
+
+        let heights: Vec<u16> = (0..samples)
+            .flat_map(|j| {
+                let start = (j + reach) * padded + reach;
+                grid[start..start + samples].iter().copied()
+            })
+            .collect();
+
+        let height = |x: usize, y: usize| config.dequantize(grid[y * padded + x]);
+        let normals: Vec<Vec3> = (0..samples * samples)
+            .into_par_iter()
+            .map(|k| {
+                let (x, y) = (k % samples + reach, k / samples + reach);
+                let dx = (height(x + 1, y) - height(x - 1, y)) / (2.0 * cell);
+                let dz = (height(x, y + 1) - height(x, y - 1)) / (2.0 * cell);
+                Vec3::new(-dx, 1.0, -dz).normalize()
+            })
+            .collect();
+
+        let breakup = Perlin::new((config.seed ^ (config.seed >> 32) ^ 0x5EED) as u32);
+        let wavelength = rules.breakup_wavelength.max(1.0) as f64;
+        let splat: Vec<[u8; 4]> = (0..samples * samples)
+            .into_par_iter()
+            .map(|k| {
+                let (x, y) = (k % samples + reach, k / samples + reach);
+                let r = reach;
+                let span = r as f32 * cell;
+                let h = height(x, y);
+
+                let dx = (height(x + r, y) - height(x - r, y)) / (2.0 * span);
+                let dz = (height(x, y + r) - height(x, y - r)) / (2.0 * span);
+                let slope = 1.0 - 1.0 / (1.0 + dx * dx + dz * dz).sqrt();
+
+                let around = (height(x + r, y) + height(x - r, y) + height(x, y + r) + height(x, y - r)) * 0.25;
+                let concavity = (around - h) / span;
+
+                let gx = (coord.x as i64 * cells + x as i64 - apron) as f64 * cell_size;
+                let gz = (coord.y as i64 * cells + y as i64 - apron) as f64 * cell_size;
+                let noise = breakup.get([gx / wavelength, gz / wavelength]) as f32;
+
+                rules.weights(h, slope, concavity, noise).pack()
+            })
+            .collect();
 
         let mut tile = TileData {
             coord,
             samples,
             heights: heights.into_boxed_slice(),
-            splat: vec![[255, 0, 0, 0]; samples * samples].into_boxed_slice(),
+            normals: normals.into_boxed_slice(),
+            splat: splat.into_boxed_slice(),
             holes: None,
             height_bounds: HeightBounds { min: config.height_min, max: config.height_min },
             objects: Vec::new(),
@@ -170,6 +229,36 @@ mod tests {
         ];
 
         assert!(corners.iter().all(|c| *c == corners[0]), "{corners:?}");
+    }
+
+    #[test]
+    fn neighbours_share_border_normals() {
+        let (config, noise) = (config(), noise());
+        let n = config.samples();
+
+        let left = TileData::generate(&config, TileCoord::new(-1, 0), &noise);
+        let right = TileData::generate(&config, TileCoord::new(0, 0), &noise);
+        let top = TileData::generate(&config, TileCoord::new(0, 1), &noise);
+
+        for j in 0..n {
+            assert_eq!(left.normals[j * n + n - 1], right.normals[j * n], "row {j}");
+        }
+        for i in 0..n {
+            assert_eq!(right.normals[(n - 1) * n + i], top.normals[i], "column {i}");
+        }
+    }
+
+    #[test]
+    fn neighbours_share_border_splat() {
+        let (config, noise) = (config(), noise());
+        let n = config.samples();
+
+        let left = TileData::generate(&config, TileCoord::new(2, -1), &noise);
+        let right = TileData::generate(&config, TileCoord::new(3, -1), &noise);
+
+        for j in 0..n {
+            assert_eq!(left.splat[j * n + n - 1], right.splat[j * n], "row {j}");
+        }
     }
 
     #[test]

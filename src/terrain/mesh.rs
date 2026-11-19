@@ -1,29 +1,49 @@
-use glam::{Vec2, Vec3};
+use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
 use rayon::prelude::*;
 
-use crate::mesh::{Mesh, Vertex};
+use crate::mesh::Mesh;
 
 use super::{config::TerrainConfig, tile::TileData};
 
-pub fn tile_mesh(config: &TerrainConfig, tile: &TileData) -> Mesh<Vertex> {
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct TerrainVertex {
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub splat: [u8; 4],
+}
+
+#[cfg(feature = "render")]
+impl TerrainVertex {
+    const ATTRIBS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x3,
+        2 => Unorm8x4,
+    ];
+
+    pub fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<TerrainVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: Self::ATTRIBS,
+        }
+    }
+}
+
+pub fn tile_mesh(config: &TerrainConfig, tile: &TileData) -> Mesh<TerrainVertex> {
     let n = tile.samples;
     let last = n - 1;
     let cell = config.cell_size();
-    let height = |i: usize, j: usize| tile.height(config, i, j);
 
-    let vertices: Vec<Vertex> = (0..n * n)
+    let vertices: Vec<TerrainVertex> = (0..n * n)
         .into_par_iter()
         .map(|k| {
             let (i, j) = (k % n, k / n);
-            let (left, right) = (i.saturating_sub(1), (i + 1).min(last));
-            let (down, up) = (j.saturating_sub(1), (j + 1).min(last));
-            let dx = (height(right, j) - height(left, j)) / ((right - left) as f32 * cell);
-            let dz = (height(i, up) - height(i, down)) / ((up - down) as f32 * cell);
-
-            Vertex {
-                position: Vec3::new(i as f32 * cell, height(i, j), j as f32 * cell),
-                normal: Vec3::new(-dx, 1.0, -dz).normalize(),
-                texcoord: Vec2::new(i as f32 / last as f32, j as f32 / last as f32),
+            TerrainVertex {
+                position: Vec3::new(i as f32 * cell, tile.height(config, i, j), j as f32 * cell),
+                normal: tile.normals[k],
+                splat: tile.splat[k],
             }
         })
         .collect();
@@ -56,6 +76,14 @@ mod tests {
         }
     }
 
+    struct Steep;
+
+    impl HeightSource for Steep {
+        fn height(&self, x: f64, _z: f64) -> f32 {
+            x as f32 * 3.0
+        }
+    }
+
     fn config() -> TerrainConfig {
         TerrainConfig { cells: 16, tile_size: 64.0, lod_levels: 3, ..Default::default() }
     }
@@ -72,6 +100,7 @@ mod tests {
         for v in &mesh.vertices {
             assert!((v.position.y - 12.0).abs() < 0.05);
             assert!((v.normal - Vec3::Y).length() < 1e-5);
+            assert_eq!(v.splat, [255, 0, 0, 0]);
         }
 
         for tri in mesh.indices.chunks(3) {
@@ -92,6 +121,15 @@ mod tests {
         for v in &mesh.vertices {
             assert!((v.normal - expected).length() < 1e-2, "{:?}", v.normal);
         }
+    }
+
+    #[test]
+    fn steep_slope_is_painted_as_cliff() {
+        let config = config();
+        let tile = TileData::generate(&config, TileCoord::new(0, 0), &Steep);
+        let mesh = tile_mesh(&config, &tile);
+
+        assert!(mesh.vertices.iter().all(|v| v.splat[3] > 200), "{:?}", mesh.vertices[0].splat);
     }
 
     #[test]
