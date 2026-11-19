@@ -14,6 +14,8 @@ app = ["render", "dep:pollster"]
 render = ["ui", "dep:wgpu", "dep:glfw", "dep:image", "dep:tobj", "dep:bitflags", "dep:slotmap", "dep:pretty-type-name", "dep:gltf"]
 # MVU UI framework (`ui::UiApp`), Taffy layout, glyph atlas and the UI renderer. Requires `render` to draw.
 ui = ["render", "dep:ab_glyph", "dep:taffy"]
+# Developer overlay (Dear ImGui) drawn through the UI renderer. Not in `default`: it compiles C++.
+imgui = ["ui", "dep:imgui"]
 # Rapier3d physics. Independent of `render` — collider building only touches raw `Mesh`/`Transform`
 # data (see `crate::mesh`). Debug-render overlay (`physics::render_debug`) is compiled in only
 # when `render` is also enabled.
@@ -36,6 +38,8 @@ bytemuck = { version = "1.25.0", features = ["derive"] }
 flecs_ecs = "0.2.2"
 glam = { version = "0.33.2", features = ["serde", "bytemuck", "rand"] }
 log = "0.4.29"
+noise = "0.9.0"
+rayon = "1.11.0"
 parking_lot = "0.12.5"
 paste = "1.0.15"
 rand = "0.10.0"
@@ -69,6 +73,7 @@ libloading = { version = "0.9.0", optional = true }
 typetag = { version = "0.2.23", optional = true }
 
 # ui
+imgui = { version = "0.12.0", optional = true }
 taffy = { version = "0.9.2", default-features = false, optional = true, features = [
     "block_layout",
     "content_size",
@@ -82,7 +87,6 @@ taffy = { version = "0.9.2", default-features = false, optional = true, features
 # Currently unused by any module; kept optional so they don't add weight until something needs them.
 bincode = { version = "2.0.1", optional = true }
 kira = { version = "0.12.0", optional = true }
-rayon = { version = "1.11.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glfw = { version = "0.61.0", default-features = false, features = ["x11", "raw-window-handle-v0-6"], optional = true }

@@ -366,6 +366,9 @@ impl XastGE {
                         kb.handle_event(e);
                         mouse.handle_event(e);
                     });
+
+                    #[cfg(feature = "imgui")]
+                    g.game.world.try_get::<&mut crate::ui::dev::ImguiLayer>(|layer| layer.handle_event(e));
                 },
             },
         );

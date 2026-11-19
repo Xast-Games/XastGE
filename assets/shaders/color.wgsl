@@ -32,7 +32,7 @@ fn vertex(
 
     out.texcoord = input.texcoord;
     out.frag_pos = input.position;
-    out.normal = input.normal;
+    out.normal = (transform * vec4<f32>(input.normal, 0.0)).xyz;
     out.clip_position = cam_uniform.view_proj * transform * vec4<f32>(input.position, 1.0);
 
     return out;
@@ -40,5 +40,7 @@ fn vertex(
 
 @fragment
 fn fragment(output: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(color, 1.0);
+    let light = normalize(vec3<f32>(0.4, 1.0, 0.3));
+    let diffuse = max(dot(normalize(output.normal), light), 0.0);
+    return vec4<f32>(color * (0.3 + 0.7 * diffuse), 1.0);
 }

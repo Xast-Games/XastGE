@@ -142,6 +142,39 @@ impl<V: Send + Sync + 'static> Mesh<V> {
     }
 }
 
+impl Mesh<Vertex> {
+    pub fn plane(size: f32, cells: u32) -> Self {
+        let cells = cells.max(1);
+        let stride = cells + 1;
+        let step = size / cells as f32;
+        let half = size * 0.5;
+
+        let mut vertices = Vec::with_capacity((stride * stride) as usize);
+        for z in 0..stride {
+            for x in 0..stride {
+                vertices.push(Vertex {
+                    position: Vec3::new(x as f32 * step - half, 0.0, z as f32 * step - half),
+                    normal: Vec3::Y,
+                    texcoord: Vec2::new(x as f32 / cells as f32, z as f32 / cells as f32),
+                });
+            }
+        }
+
+        let mut indices = Vec::with_capacity((cells * cells * 6) as usize);
+        for z in 0..cells {
+            for x in 0..cells {
+                let i00 = z * stride + x;
+                let i10 = i00 + 1;
+                let i01 = i00 + stride;
+                let i11 = i01 + 1;
+                indices.extend_from_slice(&[i00, i01, i10, i10, i01, i11]);
+            }
+        }
+
+        Mesh::new(vertices, indices)
+    }
+}
+
 #[cfg(feature = "render")]
 impl Mesh<Vertex> {
     pub fn load_obj(path: &str) -> Self {
@@ -219,17 +252,15 @@ impl<V: Pod + Send + Sync + 'static> Drawable for Mesh<V> {
         let Some(vb) = self.vertex_buffer else { unreachable!() };
 
         registry
-            .get_buffer(vb)
+            .get_buffer_mut(vb)
             .expect("Cannot call update() on Mesh")
-            .fill_exact(render_device, 0, &self.vertices)
-            .unwrap();
+            .fill(render_device, 0, &self.vertices);
 
         if let Some(ib) = self.index_buffer {
             registry
-                .get_buffer(ib)
+                .get_buffer_mut(ib)
                 .expect("Cannot call update() on Mesh")
-                .fill_exact(render_device, 0, &self.indices)
-                .unwrap();
+                .fill(render_device, 0, &self.indices);
         }
     }
 
@@ -250,5 +281,27 @@ impl<V: Pod + Send + Sync + 'static> Drawable for Mesh<V> {
 
     fn indices(&self) -> u32 {
         self.indices.len() as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plane_faces_up_and_is_centred() {
+        let plane = Mesh::<Vertex>::plane(10.0, 4);
+
+        assert_eq!(plane.vertices.len(), 25);
+        assert_eq!(plane.indices.len(), 4 * 4 * 6);
+        assert_eq!(plane.vertices[0].position, Vec3::new(-5.0, 0.0, -5.0));
+        assert_eq!(plane.vertices[24].position, Vec3::new(5.0, 0.0, 5.0));
+
+        for tri in plane.indices.chunks(3) {
+            let a = plane.vertices[tri[0] as usize].position;
+            let b = plane.vertices[tri[1] as usize].position;
+            let c = plane.vertices[tri[2] as usize].position;
+            assert!((b - a).cross(c - a).y > 0.0);
+        }
     }
 }

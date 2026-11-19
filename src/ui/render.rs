@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use flecs_ecs::prelude::*;
 use glam::Vec2;
 use image::{Rgba as ImageRgba, RgbaImage};
+use parking_lot::Mutex;
 
 use crate::{
     RenderOverlay, Setup,
@@ -11,6 +12,7 @@ use crate::{
         RenderDevice, RenderSurface,
         buffer::BufferStorage,
         include_wgsl,
+        pass::RenderPass,
         pipeline::{Pipeline, RenderPipelineDescriptor},
         registry::RenderRegistry,
         shader_resource::{ShaderResource, ShaderResourceLayout},
@@ -19,7 +21,7 @@ use crate::{
     },
 };
 
-use super::tree::{UiQuadVertex, UiTree};
+use super::tree::{Batch, Geometry, UiQuadVertex, UiTree};
 
 impl UiQuadVertex {
     const ATTRIBS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
@@ -52,6 +54,18 @@ struct RendererState {
     _white_texture: Texture,
     textures: HashMap<TextureHandle, ShaderResource>,
     trees: HashMap<Entity, TreeBuffers>,
+    overlay: Option<TreeBuffers>,
+}
+
+#[derive(Default)]
+pub(crate) struct OverlayGeometry {
+    pub geometry: Geometry,
+    pub version: u64,
+}
+
+#[derive(Component, Clone, Default)]
+pub struct UiOverlay {
+    pub(crate) inner: Arc<Mutex<OverlayGeometry>>,
 }
 
 #[derive(Component, Default)]
@@ -104,13 +118,72 @@ impl RendererState {
             _white_texture: white_texture,
             textures: HashMap::new(),
             trees: HashMap::new(),
+            overlay: None,
         }
+    }
+}
+
+fn ensure_texture(
+    textures: &mut HashMap<TextureHandle, ShaderResource>,
+    layout: &ShaderResourceLayout,
+    device: &RenderDevice,
+    registry: &RenderRegistry,
+    batches: &[Batch],
+) {
+    for batch in batches {
+        if let Some(handle) = batch.texture
+            && !textures.contains_key(&handle)
+            && let Some(texture) = registry.get_texture(handle)
+        {
+            let resource = ShaderResource::builder()
+                .with_texture(texture, TextureResourceUsage::TEXTURE | TextureResourceUsage::SAMPLER)
+                .build(device, layout);
+            textures.insert(handle, resource);
+        }
+    }
+}
+
+fn draw_batches(
+    pass: &mut RenderPass<'_>,
+    white: &ShaderResource,
+    textures: &HashMap<TextureHandle, ShaderResource>,
+    buffers: &TreeBuffers,
+    batches: &[Batch],
+    viewport: Vec2,
+) {
+    for batch in batches {
+        let resource = match batch.texture {
+            None => white,
+            Some(handle) => match textures.get(&handle) {
+                Some(r) => r,
+                None => continue,
+            },
+        };
+
+        let x0 = batch.scissor.x.max(0.0).min(viewport.x);
+        let y0 = batch.scissor.y.max(0.0).min(viewport.y);
+        let x1 = (batch.scissor.x + batch.scissor.w).max(0.0).min(viewport.x);
+        let y1 = (batch.scissor.y + batch.scissor.h).max(0.0).min(viewport.y);
+        if x1 - x0 < 1.0 || y1 - y0 < 1.0 {
+            continue;
+        }
+
+        pass.set_scissor(x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+        pass.set_shader_resource(0, resource);
+        pass.draw_indexed_buffers(
+            &buffers.vertices,
+            &buffers.indices,
+            batch.start..batch.start + batch.count,
+        );
     }
 }
 
 pub(crate) fn register(world: &World) {
     world.component::<UiRenderer>().add_trait::<flecs::Singleton>();
     world.set(UiRenderer::default());
+
+    world.component::<UiOverlay>().add_trait::<flecs::Singleton>();
+    world.set(UiOverlay::default());
 
     world.system::<(&mut UiRenderer, &RenderSlot)>()
         .kind(Setup)
@@ -120,9 +193,9 @@ pub(crate) fn register(world: &World) {
 
     let trees = world.query::<&UiTree>().build();
 
-    world.system::<(&mut UiRenderer, &mut RenderSlot, &RenderRegistry)>()
+    world.system::<(&mut UiRenderer, &mut RenderSlot, &RenderRegistry, &UiOverlay)>()
         .kind(RenderOverlay)
-        .each(move |(renderer, slot, registry)| {
+        .each(move |(renderer, slot, registry, overlay)| {
             let Some(state) = renderer.state.as_mut() else {
                 return;
             };
@@ -147,21 +220,35 @@ pub(crate) fn register(world: &World) {
                     buffers.version = tree.version;
                 }
 
-                for batch in &geometry.batches {
-                    if let Some(handle) = batch.texture
-                        && !state.textures.contains_key(&handle)
-                        && let Some(texture) = registry.get_texture(handle)
-                    {
-                        let resource = ShaderResource::builder()
-                            .with_texture(texture, TextureResourceUsage::TEXTURE | TextureResourceUsage::SAMPLER)
-                            .build(device, &state.layout);
-                        state.textures.insert(handle, resource);
-                    }
-                }
+                ensure_texture(&mut state.textures, &state.layout, device, registry, &geometry.batches);
             });
 
             state.trees.retain(|id, _| order.iter().any(|(_, e, _)| e == id));
             order.sort_by_key(|(z, _, _)| *z);
+
+            let overlay_batches = {
+                let inner = overlay.inner.lock();
+                let geometry = &inner.geometry;
+
+                if geometry.batches.is_empty() {
+                    Vec::new()
+                } else {
+                    let buffers = state.overlay.get_or_insert_with(|| TreeBuffers {
+                        vertices: BufferStorage::new::<UiQuadVertex>(device, geometry.vertices.len().max(4), BufferUsages::VERTEX),
+                        indices: BufferStorage::new::<u32>(device, geometry.indices.len().max(6), BufferUsages::INDEX),
+                        version: u64::MAX,
+                    });
+
+                    if buffers.version != inner.version {
+                        buffers.vertices.fill(device, 0, &geometry.vertices);
+                        buffers.indices.fill(device, 0, &geometry.indices);
+                        buffers.version = inner.version;
+                    }
+
+                    ensure_texture(&mut state.textures, &state.layout, device, registry, &geometry.batches);
+                    geometry.batches.clone()
+                }
+            };
 
             let size = device.size();
             let viewport = Vec2::new(size.x as f32, size.y as f32);
@@ -175,35 +262,13 @@ pub(crate) fn register(world: &World) {
             pass.set_push_constants(&viewport);
 
             for (_, id, batches) in order {
-                let Some(buffers) = state.trees.get(&id) else {
-                    continue;
-                };
-
-                for batch in &batches {
-                    let resource = match batch.texture {
-                        None => &state.white,
-                        Some(handle) => match state.textures.get(&handle) {
-                            Some(r) => r,
-                            None => continue,
-                        },
-                    };
-
-                    let x0 = batch.scissor.x.max(0.0).min(viewport.x);
-                    let y0 = batch.scissor.y.max(0.0).min(viewport.y);
-                    let x1 = (batch.scissor.x + batch.scissor.w).max(0.0).min(viewport.x);
-                    let y1 = (batch.scissor.y + batch.scissor.h).max(0.0).min(viewport.y);
-                    if x1 - x0 < 1.0 || y1 - y0 < 1.0 {
-                        continue;
-                    }
-
-                    pass.set_scissor(x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
-                    pass.set_shader_resource(0, resource);
-                    pass.draw_indexed_buffers(
-                        &buffers.vertices,
-                        &buffers.indices,
-                        batch.start..batch.start + batch.count,
-                    );
+                if let Some(buffers) = state.trees.get(&id) {
+                    draw_batches(&mut pass, &state.white, &state.textures, buffers, &batches, viewport);
                 }
+            }
+
+            if let Some(buffers) = state.overlay.as_ref() {
+                draw_batches(&mut pass, &state.white, &state.textures, buffers, &overlay_batches, viewport);
             }
         });
 }

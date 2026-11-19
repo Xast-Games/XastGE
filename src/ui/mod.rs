@@ -6,6 +6,8 @@ use crate::render::{RenderDevice, registry::{RenderRegistry, RenderRegistryModul
 pub mod anim;
 pub mod app;
 pub mod atlas;
+#[cfg(feature = "imgui")]
+pub mod dev;
 pub mod element;
 pub mod node;
 pub mod render;
@@ -73,5 +75,8 @@ impl Module for UiModule {
         world.component::<tree::UiTree>();
 
         render::register(world);
+
+        #[cfg(feature = "imgui")]
+        dev::register(world);
     }
 }

@@ -18,6 +18,7 @@ pub mod time;
 pub mod gamepad;
 #[cfg(feature = "scene")]
 pub mod scene;
+pub mod terrain;
 
 use flecs_ecs::macros::Component;
 
