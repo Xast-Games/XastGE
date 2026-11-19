@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use flecs_ecs::macros::Component;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -66,6 +67,9 @@ pub enum Anchor {
         amount: f32,
     },
 }
+
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct TerrainAnchor(pub Anchor);
 
 impl Anchor {
     pub fn id(&self) -> &str {
@@ -391,6 +395,18 @@ impl WorldDefinition {
 
     pub fn locations(&self) -> impl Iterator<Item = (&Region, &Location)> {
         self.regions.iter().flat_map(|r| r.locations.iter().map(move |l| (r, l)))
+    }
+
+    pub fn anchors(&self) -> Vec<Anchor> {
+        let anchors = self.regions.iter().flat_map(|r| r.anchors.iter().cloned());
+        let flats = self.locations().filter(|(_, l)| l.constraints.flatten).map(|(_, l)| Anchor::Plateau {
+            id: l.id.clone(),
+            position: l.position,
+            yaw_degrees: l.yaw_degrees,
+            footprint: l.footprint.clone(),
+            falloff: l.constraints.falloff.max(1.0),
+        });
+        anchors.chain(flats).collect()
     }
 
     pub fn validate(&self) -> Vec<WorldIssue> {

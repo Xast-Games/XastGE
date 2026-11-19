@@ -74,6 +74,28 @@ fn anchors_parse_with_defaults() {
 }
 
 #[test]
+fn flattened_locations_become_plateau_anchors() {
+    let mut world = world();
+    assert_eq!(world.anchors().len(), 5);
+
+    world.regions[0].locations[0].constraints.flatten = true;
+    world.regions[0].locations[0].constraints.falloff = 0.0;
+    let anchors = world.anchors();
+
+    assert_eq!(anchors.len(), 6);
+    assert_eq!(
+        anchors[5],
+        Anchor::Plateau {
+            id: "town".into(),
+            position: Vec3::new(0.0, 100.0, 0.0),
+            yaw_degrees: 30.0,
+            footprint: Footprint::Rect { width: 200.0, depth: 120.0 },
+            falloff: 1.0,
+        }
+    );
+}
+
+#[test]
 fn footprint_distance_is_zero_inside_and_grows_outside() {
     let rect = Footprint::Rect { width: 10.0, depth: 4.0 };
     assert_eq!(rect.distance(Vec2::new(1.0, 1.0)), 0.0);

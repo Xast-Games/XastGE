@@ -7,6 +7,11 @@ mod render {
     mod texture;
 }
 
+#[cfg(feature = "scene")]
+mod scene {
+    mod kebab;
+}
+
 mod terrain {
     mod config;
     mod erosion;

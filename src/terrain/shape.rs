@@ -2,7 +2,7 @@ use glam::{Vec2, Vec3};
 
 use super::{
     source::{HeightSource, LandscapeSettings, LandscapeSource},
-    world::{Anchor, Footprint, WorldDefinition, local_point},
+    world::{Anchor, Footprint, local_point},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,9 +107,9 @@ impl Line {
 }
 
 impl AuthoredSource {
-    pub fn new(world: &WorldDefinition, seed: u64, landscape: &LandscapeSettings, settings: &ShapeSettings) -> Self {
+    pub fn new(baseline: f32, anchors: &[Anchor], seed: u64, landscape: &LandscapeSettings, settings: &ShapeSettings) -> Self {
         let mut source = AuthoredSource {
-            baseline: world.terrain.baseline,
+            baseline,
             max_rise: 1.0,
             peaks: Vec::new(),
             ridges: Vec::new(),
@@ -120,43 +120,30 @@ impl AuthoredSource {
             settings: settings.clone(),
         };
 
-        for region in &world.regions {
-            for anchor in &region.anchors {
-                match anchor {
-                    Anchor::Peak { position, radius, sharpness, .. } => source.peaks.push(Peak {
-                        center: flat(*position),
-                        height: position.y,
-                        radius: *radius,
-                        sharpness: *sharpness,
-                    }),
-                    Anchor::Ridge { points, width, sharpness, .. } if !points.is_empty() => {
-                        source.ridges.push(Line { points: points.clone(), width: *width, sharpness: *sharpness })
-                    }
-                    Anchor::Valley { points, width, .. } if !points.is_empty() => {
-                        source.valleys.push(Line { points: points.clone(), width: *width, sharpness: 1.0 })
-                    }
-                    Anchor::Plateau { position, yaw_degrees, footprint, falloff, .. } => source.flats.push(Flat {
-                        origin: *position,
-                        yaw_degrees: *yaw_degrees,
-                        footprint: footprint.clone(),
-                        falloff: *falloff,
-                    }),
-                    Anchor::Detail { position, radius, amount, .. } => {
-                        source.spots.push(Spot { center: flat(*position), radius: *radius, amount: *amount })
-                    }
-                    _ => {}
+        for anchor in anchors {
+            match anchor {
+                Anchor::Peak { position, radius, sharpness, .. } => source.peaks.push(Peak {
+                    center: flat(*position),
+                    height: position.y,
+                    radius: *radius,
+                    sharpness: *sharpness,
+                }),
+                Anchor::Ridge { points, width, sharpness, .. } if !points.is_empty() => {
+                    source.ridges.push(Line { points: points.clone(), width: *width, sharpness: *sharpness })
                 }
-            }
-
-            for location in &region.locations {
-                if location.constraints.flatten {
-                    source.flats.push(Flat {
-                        origin: location.position,
-                        yaw_degrees: location.yaw_degrees,
-                        footprint: location.footprint.clone(),
-                        falloff: location.constraints.falloff.max(1.0),
-                    });
+                Anchor::Valley { points, width, .. } if !points.is_empty() => {
+                    source.valleys.push(Line { points: points.clone(), width: *width, sharpness: 1.0 })
                 }
+                Anchor::Plateau { position, yaw_degrees, footprint, falloff, .. } => source.flats.push(Flat {
+                    origin: *position,
+                    yaw_degrees: *yaw_degrees,
+                    footprint: footprint.clone(),
+                    falloff: *falloff,
+                }),
+                Anchor::Detail { position, radius, amount, .. } => {
+                    source.spots.push(Spot { center: flat(*position), radius: *radius, amount: *amount })
+                }
+                _ => {}
             }
         }
 

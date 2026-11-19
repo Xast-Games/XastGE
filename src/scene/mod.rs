@@ -1,3 +1,5 @@
+pub mod kebab;
+
 use flecs_ecs::core::{EntityView, World};
 use serde::{Deserialize, Serialize};
 
