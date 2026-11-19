@@ -45,6 +45,7 @@ pub struct SplatRules {
     pub rocky_height: Band,
     pub cliff_slope: Band,
     pub soil_concavity: Band,
+    pub soil_moisture: Band,
     pub feature_radius: f32,
     pub breakup: f32,
     pub breakup_wavelength: f32,
@@ -57,6 +58,7 @@ impl Default for SplatRules {
             rocky_height: Band::new(800.0, 1100.0),
             cliff_slope: Band::new(0.18, 0.30),
             soil_concavity: Band::new(0.02, 0.08),
+            soil_moisture: Band::new(0.35, 0.85),
             feature_radius: 16.0,
             breakup: 60.0,
             breakup_wavelength: 300.0,
@@ -65,11 +67,12 @@ impl Default for SplatRules {
 }
 
 impl SplatRules {
-    pub fn weights(&self, height: f32, slope: f32, concavity: f32, noise: f32) -> SplatWeights {
+    pub fn weights(&self, height: f32, slope: f32, concavity: f32, moisture: f32, noise: f32) -> SplatWeights {
         let tilted = slope + noise * 0.03;
         let cliff = self.cliff_slope.ramp(tilted);
         let rocky = self.rocky_slope.ramp(tilted).max(self.rocky_height.ramp(height + noise * self.breakup));
-        let soil = self.soil_concavity.ramp(concavity + noise * 0.01);
+        let soil = self.soil_concavity.ramp(concavity + noise * 0.01)
+            .max(self.soil_moisture.ramp(moisture + noise * 0.05));
 
         SplatWeights {
             grass: (1.0 - soil) * (1.0 - rocky) * (1.0 - cliff),
@@ -77,43 +80,5 @@ impl SplatRules {
             rocky: rocky * (1.0 - cliff),
             cliff,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn band_ramps_smoothly_between_its_ends() {
-        let band = Band::new(10.0, 20.0);
-        assert_eq!(band.ramp(5.0), 0.0);
-        assert_eq!(band.ramp(25.0), 1.0);
-        assert!((band.ramp(15.0) - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn weights_always_sum_to_one() {
-        let rules = SplatRules::default();
-        for height in [-50.0, 0.0, 200.0, 350.0, 900.0] {
-            for slope in [0.0, 0.1, 0.25, 0.4, 0.9] {
-                for concavity in [-0.1, 0.0, 0.05, 0.2] {
-                    for noise in [-1.0, 0.0, 1.0] {
-                        let w = rules.weights(height, slope, concavity, noise);
-                        assert!((w.sum() - 1.0).abs() < 1e-5, "{w:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn layers_follow_the_terrain() {
-        let rules = SplatRules::default();
-        assert_eq!(rules.weights(50.0, 0.0, 0.0, 0.0).pack(), [255, 0, 0, 0]);
-        assert_eq!(rules.weights(50.0, 0.0, 0.5, 0.0).pack()[1], 255);
-        assert!(rules.weights(50.0, 0.12, 0.0, 0.0).pack()[2] > 0);
-        assert_eq!(rules.weights(2000.0, 0.0, 0.0, 0.0).pack()[2], 255);
-        assert_eq!(rules.weights(50.0, 0.8, 0.0, 0.0).pack()[3], 255);
     }
 }

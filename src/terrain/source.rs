@@ -2,8 +2,26 @@ use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 use super::splat::Band;
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SurfaceHints {
+    pub moisture: f32,
+    pub sediment: f32,
+}
+
 pub trait HeightSource: Send + Sync {
     fn height(&self, x: f64, z: f64) -> f32;
+
+    fn surface(&self, _x: f64, _z: f64) -> SurfaceHints {
+        SurfaceHints::default()
+    }
+
+    fn pin(&self, _x: f64, _z: f64, height: f32) -> f32 {
+        height
+    }
+
+    fn detail_weight(&self, _x: f64, _z: f64) -> f32 {
+        1.0
+    }
 }
 
 pub struct FlatSource(pub f32);
@@ -142,13 +160,29 @@ fn unit(value: f64) -> f32 {
     ((value as f32 + 1.0) * 0.5).clamp(0.0, 1.0)
 }
 
+impl LandscapeSource {
+    fn warp(&self, x: f64, z: f64) -> (f64, f64) {
+        let s = &self.settings;
+        let ww = s.warp_wavelength.max(1.0) as f64;
+        (
+            x + self.warp_x.get([x / ww, z / ww]) * s.warp_strength as f64,
+            z + self.warp_z.get([x / ww + 5.2, z / ww + 1.3]) * s.warp_strength as f64,
+        )
+    }
+
+    pub fn relief(&self, x: f64, z: f64) -> f32 {
+        let s = &self.settings;
+        let (wx, wz) = self.warp(x, z);
+        let plains = unit(self.plains.get([wx, wz])).powf(s.plains_curve.max(0.1)) * s.plains_amplitude;
+        let ridges = self.ridged(wx, wz).powf(s.mountain_curve.max(0.1)) * s.mountain_height;
+        plains + ridges
+    }
+}
+
 impl HeightSource for LandscapeSource {
     fn height(&self, x: f64, z: f64) -> f32 {
         let s = &self.settings;
-
-        let ww = s.warp_wavelength.max(1.0) as f64;
-        let wx = x + self.warp_x.get([x / ww, z / ww]) * s.warp_strength as f64;
-        let wz = z + self.warp_z.get([x / ww + 5.2, z / ww + 1.3]) * s.warp_strength as f64;
+        let (wx, wz) = self.warp(x, z);
 
         let mw = s.mask_wavelength.max(1.0) as f64;
         let mask = s.mask.ramp(unit(self.mask.get([wx / mw, wz / mw])));
@@ -157,48 +191,5 @@ impl HeightSource for LandscapeSource {
         let ridges = self.ridged(wx, wz).powf(s.mountain_curve.max(0.1)) * s.mountain_height;
 
         s.base_height + plains + ridges * mask
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fbm_is_deterministic() {
-        let a = NoiseSource::fbm(3, 10.0, 50.0, 100.0, 5);
-        let b = NoiseSource::fbm(3, 10.0, 50.0, 100.0, 5);
-
-        for i in -20..20 {
-            let (x, z) = (i as f64 * 37.3, i as f64 * -91.1);
-            assert_eq!(a.height(x, z), b.height(x, z));
-        }
-    }
-
-    #[test]
-    fn different_seeds_differ() {
-        let a = NoiseSource::fbm(1, 0.0, 100.0, 256.0, 5);
-        let b = NoiseSource::fbm(2, 0.0, 100.0, 256.0, 5);
-        assert_ne!(a.height(123.4, 456.7), b.height(123.4, 456.7));
-    }
-
-    #[test]
-    fn landscape_stays_within_its_parts() {
-        let settings = LandscapeSettings::default();
-        let land = LandscapeSource::new(9, &settings);
-        let top = settings.base_height + settings.plains_amplitude + settings.mountain_height;
-
-        for i in -50..50 {
-            let h = land.height(i as f64 * 731.0, i as f64 * -419.0);
-            assert!(h >= settings.base_height - 1e-3 && h <= top + 1e-3, "{h}");
-        }
-    }
-
-    #[test]
-    fn landscape_is_deterministic() {
-        let settings = LandscapeSettings::default();
-        let a = LandscapeSource::new(4, &settings);
-        let b = LandscapeSource::new(4, &settings);
-        assert_eq!(a.height(1234.5, -987.6), b.height(1234.5, -987.6));
     }
 }

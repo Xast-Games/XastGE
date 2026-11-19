@@ -332,9 +332,9 @@ pub struct TerrainPalette {
     pub height_blend: f32,
     pub detail_distance: f32,
     pub far_distance: f32,
-    pub far_scale: f32,
+    pub specular: f32,
     pub stochastic: f32,
-    pub padding: f32,
+    pub moisture_strength: f32,
 }
 
 impl Default for TerrainPalette {
@@ -354,9 +354,9 @@ impl Default for TerrainPalette {
             height_blend: 0.25,
             detail_distance: 150.0,
             far_distance: 2500.0,
-            far_scale: 8.0,
+            specular: 0.5,
             stochastic: 1.0,
-            padding: 0.0,
+            moisture_strength: 0.5,
         }
     }
 }
@@ -366,6 +366,7 @@ pub struct TerrainLayerFiles<'a> {
     pub normal: &'a str,
     pub height: &'a str,
     pub occlusion: &'a str,
+    pub roughness: &'a str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -401,11 +402,13 @@ fn pack_layer(files: &TerrainLayerFiles) -> Result<(image::RgbaImage, image::Rgb
     let height = open_rgba(files.height, size)?;
     let mut normal = open_rgba(files.normal, size)?;
     let occlusion = open_rgba(files.occlusion, size)?;
+    let roughness = open_rgba(files.roughness, size)?;
 
     for (pixel, h) in albedo.pixels_mut().zip(height.pixels()) {
         pixel.0[3] = h.0[0];
     }
-    for (pixel, ao) in normal.pixels_mut().zip(occlusion.pixels()) {
+    for ((pixel, ao), r) in normal.pixels_mut().zip(occlusion.pixels()).zip(roughness.pixels()) {
+        pixel.0[2] = r.0[0];
         pixel.0[3] = ao.0[0];
     }
 
