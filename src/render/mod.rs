@@ -18,6 +18,8 @@ pub mod shader_resource;
 pub use crate::mesh;
 pub mod camera;
 pub mod animation;
+pub mod lit;
+pub mod model;
 #[cfg(feature = "app")]
 pub mod terrain_render;
 

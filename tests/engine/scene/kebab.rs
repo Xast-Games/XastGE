@@ -503,3 +503,37 @@ fn roads_and_rivers_are_chains_and_landmarks_are_points() {
         Landmark { name: "Grey Peak".to_owned(), kind: "peak".to_owned(), position: Vec3::new(500.0, 900.0, 500.0) }
     );
 }
+
+#[cfg(feature = "app")]
+#[test]
+fn editor_lights_become_light_sources() {
+    let color = Vec3::new(1.0, 0.5, 0.25);
+    let point = point_light_source(&PointLight { color, intensity: 800.0, range: 6.0, shadows: false });
+    assert_eq!((point.color, point.intensity, point.range, point.cone), (color, 800.0, 6.0, None));
+
+    let spot = spot_light_source(&SpotLight {
+        color,
+        intensity: 1000.0,
+        range: 10.0,
+        inner_angle: 25.0,
+        outer_angle: 35.0,
+        shadows: false,
+    });
+    let cone = spot.cone.expect("spot lights have a cone");
+    assert_eq!((cone.inner_degrees, cone.outer_degrees), (25.0, 35.0));
+}
+
+#[cfg(feature = "app")]
+#[test]
+fn greybox_colors_are_linearized_and_meshes_match_the_shape() {
+    let linear = srgb_to_linear(Vec4::new(0.0, 0.5, 1.0, 0.7));
+    assert_eq!(linear.x, 0.0);
+    assert!((linear.y - 0.2140).abs() < 1e-3);
+    assert!((linear.z - 1.0).abs() < 1e-6);
+    assert_eq!(linear.w, 0.7);
+
+    let cube = Greybox { shape: GreyboxShape::Box, size: Vec3::new(2.0, 3.0, 4.0), color: Greybox::DEFAULT_COLOR };
+    assert_eq!(greybox_mesh(&cube).vertices.len(), 24);
+    let ball = Greybox { shape: GreyboxShape::Sphere, ..cube };
+    assert!(greybox_mesh(&ball).vertices.len() > 24);
+}

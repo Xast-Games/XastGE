@@ -2,6 +2,8 @@ mod mesh;
 
 #[cfg(feature = "render")]
 mod render {
+    mod lit;
+    mod model;
     #[cfg(feature = "app")]
     mod terrain_render;
     mod texture;

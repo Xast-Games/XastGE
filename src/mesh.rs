@@ -173,6 +173,67 @@ impl Mesh<Vertex> {
 
         Mesh::new(vertices, indices)
     }
+
+    pub fn cuboid(size: Vec3) -> Self {
+        let half = size * 0.5;
+        let faces = [
+            (Vec3::X,     Vec3::NEG_Z, Vec3::Y),
+            (Vec3::NEG_X, Vec3::Z,     Vec3::Y),
+            (Vec3::Y,     Vec3::X,     Vec3::NEG_Z),
+            (Vec3::NEG_Y, Vec3::X,     Vec3::Z),
+            (Vec3::Z,     Vec3::X,     Vec3::Y),
+            (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
+        ];
+        let corners = [(-1.0, -1.0, 0.0, 1.0), (1.0, -1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 0.0), (-1.0, 1.0, 0.0, 0.0)];
+
+        let mut vertices = Vec::with_capacity(24);
+        let mut indices = Vec::with_capacity(36);
+        for (normal, u, v) in faces {
+            let base = vertices.len() as u32;
+            for (a, b, s, t) in corners {
+                vertices.push(Vertex {
+                    position: (normal + u * a + v * b) * half,
+                    normal,
+                    texcoord: Vec2::new(s, t),
+                });
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+
+        Mesh::new(vertices, indices)
+    }
+
+    pub fn ellipsoid(size: Vec3, segments: u32, rings: u32) -> Self {
+        let segments = segments.max(3);
+        let rings = rings.max(2);
+        let radii = size * 0.5;
+        let stride = segments + 1;
+
+        let mut vertices = Vec::with_capacity((stride * (rings + 1)) as usize);
+        for ring in 0..=rings {
+            let theta = std::f32::consts::PI * ring as f32 / rings as f32;
+            for segment in 0..=segments {
+                let phi = std::f32::consts::TAU * segment as f32 / segments as f32;
+                let unit = Vec3::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin());
+                vertices.push(Vertex {
+                    position: unit * radii,
+                    normal: (unit / radii).normalize_or(unit),
+                    texcoord: Vec2::new(segment as f32 / segments as f32, ring as f32 / rings as f32),
+                });
+            }
+        }
+
+        let mut indices = Vec::with_capacity((segments * rings * 6) as usize);
+        for ring in 0..rings {
+            for segment in 0..segments {
+                let a = ring * stride + segment;
+                let b = a + stride;
+                indices.extend_from_slice(&[a, a + 1, b, a + 1, b + 1, b]);
+            }
+        }
+
+        Mesh::new(vertices, indices)
+    }
 }
 
 #[cfg(feature = "render")]

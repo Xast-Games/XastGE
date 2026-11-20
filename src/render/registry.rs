@@ -43,6 +43,7 @@ pub struct RenderRegistry {
     textures: SlotMap<TextureHandle, Texture>,
     fonts: SlotMap<FontHandle, FontData>,
     placeholder_texture: TextureHandle,
+    white_texture: TextureHandle,
 }
 
 impl RenderRegistry {
@@ -159,6 +160,42 @@ impl RenderRegistry {
         }
 
         self.placeholder_texture
+    }
+
+    pub fn white_texture(&mut self, render_device: &RenderDevice) -> TextureHandle {
+        if self.white_texture.is_null() {
+            let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]));
+            let descriptor = TextureDescriptor {
+                label: "White".to_owned(),
+                ..Default::default()
+            };
+            self.white_texture = self.upload_texture(render_device, &image, descriptor);
+        }
+
+        self.white_texture
+    }
+
+    pub fn new_texture_2d(
+        &mut self,
+        render_device: &RenderDevice,
+        image: &image::RgbaImage,
+        mut descriptor: TextureDescriptor,
+    ) -> TextureHandle {
+        let chain = mip_chain(image);
+
+        descriptor.width = image.width();
+        descriptor.height = image.height();
+        descriptor.depth = None;
+        descriptor.dimension = TextureDimension::D2;
+        descriptor.view_dimension = TextureViewDimension::D2;
+        descriptor.mip_level_count = chain.len() as u32;
+
+        let texture = Texture::new(render_device, descriptor);
+        for (mip, level) in chain.iter().enumerate() {
+            texture.fill_layer_mip_rgba8(render_device, 0, mip as u32, level.width(), level.height(), level.as_raw());
+        }
+
+        self.textures.insert(texture)
     }
 
     fn upload_texture(
