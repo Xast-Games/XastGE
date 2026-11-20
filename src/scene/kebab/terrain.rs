@@ -1,16 +1,13 @@
 use flecs_ecs::prelude::*;
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Vec3};
 use serde::Deserialize;
 
-use crate::{
-    math::Transform,
-    terrain::{Anchor, Footprint, Location, TerrainAnchor},
-};
+use crate::terrain::{Anchor, Footprint, TerrainAnchor};
 
 use super::{
     archetypes::{Archetypes, SpawnContext},
-    document::KebabScene,
-    value::{ArchetypeError, vec3},
+    document::{GreyboxShape, KebabScene},
+    value::ArchetypeError,
 };
 
 pub const TERRAIN_PEAK:    &str = "terrain_peak";
@@ -43,8 +40,6 @@ struct Valley {
 
 #[derive(Deserialize)]
 struct Plateau {
-    #[serde(deserialize_with = "vec3")]
-    size: Vec3,
     falloff: f32,
 }
 
@@ -54,21 +49,13 @@ struct Noise {
     amount: f32,
 }
 
-pub fn location_transform(location: &Location) -> Transform {
-    Transform {
-        translation: location.position,
-        rotation: Quat::from_rotation_y(-location.yaw_degrees.to_radians()),
-        scale: Vec3::ONE,
-    }
+pub(super) struct Placed {
+    pub position: Vec3,
+    pub scale: f32,
+    pub yaw_degrees: f32,
 }
 
-struct Placed {
-    position: Vec3,
-    scale: f32,
-    yaw_degrees: f32,
-}
-
-fn placed(world: Mat4) -> Placed {
+pub(super) fn placed(world: Mat4) -> Placed {
     let x = world.transform_vector3(Vec3::X);
     Placed {
         position: world.transform_point3(Vec3::ZERO),
@@ -111,7 +98,20 @@ fn is_linked_to(scene: &KebabScene, index: usize, archetype: &str) -> bool {
     (0..scene.nodes.len()).any(|other| next(scene, other, archetype).ok().flatten() == Some(index))
 }
 
-fn chain(context: &SpawnContext<'_>, archetype: &str) -> Result<Option<Vec<Vec3>>, ArchetypeError> {
+pub(super) fn footprint(context: &SpawnContext<'_>, archetype: &str) -> Result<(Placed, Footprint), ArchetypeError> {
+    let Some(greybox) = context.node.greybox else {
+        return Err(ArchetypeError::Invalid(format!("{archetype} needs a greybox box or sphere as its footprint")));
+    };
+    let at = placed(context.world_matrix(context.node));
+    let size = greybox.size * at.scale;
+    let footprint = match greybox.shape {
+        GreyboxShape::Box => Footprint::Rect { width: size.x, depth: size.z },
+        GreyboxShape::Sphere => Footprint::Circle { radius: size.x.max(size.z) * 0.5 },
+    };
+    Ok((at, footprint))
+}
+
+pub(super) fn chain(context: &SpawnContext<'_>, archetype: &str) -> Result<Option<Vec<Vec3>>, ArchetypeError> {
     let scene = context.scene;
 
     if is_linked_to(scene, context.index, archetype) {
@@ -126,6 +126,9 @@ fn chain(context: &SpawnContext<'_>, archetype: &str) -> Result<Option<Vec<Vec3>
     let (order, looped) = walk(scene, context.index, archetype)?;
     if looped {
         return Err(ArchetypeError::Invalid(format!("`{archetype}` chain loops back")));
+    }
+    if order.len() < 2 {
+        return Err(ArchetypeError::Invalid(format!("`{archetype}` needs at least two nodes linked by `next`")));
     }
 
     let points = order.iter().map(|&i| placed(context.world_matrix(&scene.nodes[i])).position).collect();
@@ -147,13 +150,12 @@ pub(crate) fn register(archetypes: &mut Archetypes) {
         })
         .handler(TERRAIN_PLATEAU, |context, entity, instance| {
             let plateau = instance.params::<Plateau>()?;
-            let at = placed(context.world_matrix(context.node));
-            let size = plateau.size * at.scale;
+            let (at, footprint) = footprint(context, TERRAIN_PLATEAU)?;
             attach(entity, Anchor::Plateau {
                 id: context.node.label(),
                 position: at.position,
                 yaw_degrees: at.yaw_degrees,
-                footprint: Footprint::Rect { width: size.x, depth: size.z },
+                footprint,
                 falloff: plateau.falloff * at.scale,
             });
             Ok(())

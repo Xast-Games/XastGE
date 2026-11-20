@@ -8,6 +8,7 @@ use super::{
     archetypes::Archetypes,
     terrain,
     value::{ArchetypeError, color, vec3},
+    world,
 };
 
 pub const PREFAB_REF:      &str = "prefab_ref";
@@ -15,6 +16,7 @@ pub const MODEL_REF:       &str = "model_ref";
 pub const COLLIDER_BOX:    &str = "collider_box";
 pub const COLLIDER_SPHERE: &str = "collider_sphere";
 pub const TRIGGER:         &str = "trigger";
+pub const NO_VOLUME:       &str = "no_volume";
 pub const POINT_LIGHT:     &str = "point_light";
 pub const DIR_LIGHT:       &str = "dir_light";
 pub const SPOT_LIGHT:      &str = "spot_light";
@@ -113,7 +115,9 @@ pub(crate) fn register(archetypes: &mut Archetypes) {
         .component::<DirLight>(DIR_LIGHT)
         .component::<SpotLight>(SPOT_LIGHT)
         .component::<PlayerStart>(PLAYER_START)
+        .ignore(NO_VOLUME)
         .ignore(SNAP_DISTANCE);
 
     terrain::register(archetypes);
+    world::register(archetypes);
 }

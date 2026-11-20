@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use crate::math::Transform;
 
 use super::{
-    builtin::{self, KebabNodeInfo, KebabSceneRoot, PREFAB_REF},
+    builtin::{self, KebabNodeInfo, KebabSceneRoot, NO_VOLUME, PREFAB_REF},
     document::{ArchetypeInstance, KebabNode, KebabScene},
     value::ArchetypeError,
 };
@@ -165,7 +165,7 @@ impl Spawner<'_> {
                 .child_of(parent)
                 .set(transform(root * node.world))
                 .set(KebabNodeInfo { id: node.id.clone(), name: node.name.clone() });
-            if let Some(greybox) = node.greybox {
+            if let Some(greybox) = node.greybox.filter(|_| node.archetype(NO_VOLUME).is_none()) {
                 entity.set(greybox);
             }
             if let Some(id) = &node.id {

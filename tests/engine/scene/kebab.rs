@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use xastge::{
     math::Transform,
     scene::kebab::*,
-    terrain::{Anchor, Constraints, Footprint, Location, TerrainAnchor},
+    terrain::{Anchor, Footprint, Landmark, Location, River, Road, TerrainAnchor, WorldPath},
 };
 
 fn document(roots: Value, nodes: Value) -> String {
@@ -39,18 +39,6 @@ fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("xastge-kebab-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
-}
-
-fn location(position: Vec3, yaw_degrees: f32) -> Location {
-    Location {
-        id: "town".to_owned(),
-        name: "Town".to_owned(),
-        scene: None,
-        position,
-        yaw_degrees,
-        footprint: Footprint::Circle { radius: 10.0 },
-        constraints: Constraints::default(),
-    }
 }
 
 #[test]
@@ -272,14 +260,6 @@ fn model_ref_paths_resolve_next_to_the_scene() {
     assert_eq!(model.path, PathBuf::from("test/props/barrel.glb"));
 }
 
-#[test]
-fn location_transform_matches_location_to_world() {
-    let town = location(Vec3::new(100.0, 50.0, -30.0), 30.0);
-    let p = location_transform(&town).to_matrix().transform_point3(Vec3::new(5.0, 0.0, 2.0));
-    let expected = town.to_world(Vec2::new(5.0, 2.0));
-    assert!((Vec2::new(p.x, p.z) - expected).length() < 1e-4);
-}
-
 fn anchors(world: &World) -> Vec<Anchor> {
     let mut out = Vec::new();
     world.query::<&TerrainAnchor>().build().each(|anchor| out.push(anchor.0.clone()));
@@ -336,9 +316,13 @@ fn point_anchors_take_scale_and_yaw_from_the_node() {
     let mut pad = node(
         "pad",
         [10.0, 120.0, 0.0],
-        json!([{ "id": "terrain_plateau", "params": { "size": "(20.0, 0.0, 10.0)", "falloff": 40.0 } }]),
+        json!([
+            { "id": "terrain_plateau", "params": { "falloff": 40.0 } },
+            { "id": "no_volume", "params": {} }
+        ]),
     );
     pad["rotation"] = json!(Quat::from_rotation_y(-90f32.to_radians()).to_array());
+    pad["extras"]["kebab"]["greybox"] = json!({ "shape": "box", "size": [20.0, 0.5, 10.0] });
     let mut hill = node(
         "hill",
         [0.0, 400.0, 0.0],
@@ -352,6 +336,7 @@ fn point_anchors_take_scale_and_yaw_from_the_node() {
     let world = world();
     let report = spawn_scene(&world, &scene(json!([0, 1]), json!([pad, hill])), Transform::default());
     assert!(report.issues.is_empty(), "{:?}", report.issues);
+    assert!(world.entity_from_id(report.entities[0]).try_cloned::<&Greybox>().is_none());
 
     let found = anchors(&world);
     assert_eq!(found.len(), 3);
@@ -361,7 +346,7 @@ fn point_anchors_take_scale_and_yaw_from_the_node() {
     assert!((*position - Vec3::new(10.0, 120.0, 0.0)).length() < 1e-4);
     assert!((yaw_degrees - 90.0).abs() < 1e-3);
     assert!(matches!(footprint, Footprint::Rect { width, depth } if (width - 20.0).abs() < 1e-4 && (depth - 10.0).abs() < 1e-4));
-    assert_eq!(*falloff, 40.0);
+    assert!((falloff - 40.0).abs() < 1e-3);
 
     assert!(found.iter().any(|a| matches!(a, Anchor::Peak { radius, .. } if (radius - 800.0).abs() < 1e-3)));
     assert!(found.iter().any(|a| matches!(a, Anchor::Detail { radius, amount, .. } if (radius - 600.0).abs() < 1e-3 && *amount == 0.5)));
@@ -370,10 +355,9 @@ fn point_anchors_take_scale_and_yaw_from_the_node() {
 #[test]
 fn anchors_inside_prefabs_follow_the_prefab_node() {
     let dir = scratch("anchors");
-    let house = document(
-        json!([0]),
-        json!([node("pad", [0.0, 50.0, 0.0], json!([{ "id": "terrain_plateau", "params": { "size": "(10.0, 0.0, 10.0)", "falloff": 5.0 } }]))]),
-    );
+    let mut pad = node("pad", [0.0, 50.0, 0.0], json!([{ "id": "terrain_plateau", "params": { "falloff": 5.0 } }]));
+    pad["extras"]["kebab"]["greybox"] = json!({ "shape": "box", "size": [10.0, 0.5, 10.0] });
+    let house = document(json!([0]), json!([pad]));
     let town = document(
         json!([0]),
         json!([node("house", [30.0, 0.0, 0.0], json!([{ "id": "prefab_ref", "params": { "path": "house.gltf" } }]))]),
@@ -388,6 +372,25 @@ fn anchors_inside_prefabs_follow_the_prefab_node() {
     let found = anchors(&world);
     assert_eq!(found.len(), 1);
     assert!(matches!(&found[0], Anchor::Plateau { position, .. } if (*position - Vec3::new(30.0, 50.0, 0.0)).length() < 1e-4));
+}
+
+#[test]
+fn round_plateaus_come_from_spheres_and_need_a_greybox() {
+    let mut round = node("round", [0.0; 3], json!([{ "id": "terrain_plateau", "params": { "falloff": 5.0 } }]));
+    round["extras"]["kebab"]["greybox"] = json!({ "shape": "sphere", "size": [30.0, 2.0, 24.0] });
+    round["scale"] = json!([2.0, 2.0, 2.0]);
+    let bare = node("bare", [0.0; 3], json!([{ "id": "terrain_plateau", "params": { "falloff": 5.0 } }]));
+
+    let world = world();
+    let report = spawn_scene(&world, &scene(json!([0, 1]), json!([round, bare])), Transform::default());
+
+    let found = anchors(&world);
+    assert_eq!(found.len(), 1);
+    assert!(matches!(&found[0], Anchor::Plateau { footprint: Footprint::Circle { radius }, falloff, .. }
+        if (radius - 30.0).abs() < 1e-4 && (falloff - 10.0).abs() < 1e-4));
+    assert_eq!(report.issues.len(), 1);
+    assert!(report.issues[0].message.contains("needs a greybox"));
+    assert!(world.entity_from_id(report.entities[0]).try_cloned::<&Greybox>().is_some());
 }
 
 #[test]
@@ -409,4 +412,94 @@ fn terrain_params_with_missing_fields_are_reported() {
 
     assert!(anchors(&world).is_empty());
     assert!(report.issues[0].message.contains("sharpness"));
+}
+
+#[test]
+fn locations_take_their_footprint_and_constraints_from_the_node() {
+    let mut town = node(
+        "Rail Town",
+        [300.0, 150.0, 600.0],
+        json!([
+            {
+                "id": "location",
+                "params": {
+                    "max_slope_degrees": 8.0,
+                    "min_elevation": 80.0,
+                    "max_elevation": 350.0,
+                    "river_within": 0.0,
+                    "road_access": true
+                }
+            },
+            { "id": "terrain_plateau", "params": { "falloff": 60.0 } },
+            { "id": "no_volume", "params": {} }
+        ]),
+    );
+    town["rotation"] = json!(Quat::from_rotation_y(-20f32.to_radians()).to_array());
+    town["extras"]["kebab"]["greybox"] = json!({ "shape": "box", "size": [260.0, 10.0, 180.0] });
+    let bare = node(
+        "Camp",
+        [0.0; 3],
+        json!([{
+            "id": "location",
+            "params": { "max_slope_degrees": 0.0, "min_elevation": 0.0, "max_elevation": 0.0, "river_within": 0.0, "road_access": false }
+        }]),
+    );
+
+    let world = world();
+    let report = spawn_scene(&world, &scene(json!([0, 1]), json!([town, bare])), Transform::default());
+
+    assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+    assert!(report.issues[0].message.contains("needs a greybox"));
+    assert!(world.entity_from_id(report.entities[1]).try_cloned::<&Location>().is_none());
+
+    let location = world.entity_from_id(report.entities[0]).cloned::<&Location>();
+    assert_eq!(location.name, "Rail Town");
+    assert!((location.position - Vec3::new(300.0, 150.0, 600.0)).length() < 1e-3);
+    assert!((location.yaw_degrees - 20.0).abs() < 1e-3);
+    assert!(matches!(location.footprint, Footprint::Rect { width, depth } if (width - 260.0).abs() < 1e-3 && (depth - 180.0).abs() < 1e-3));
+    assert_eq!(location.constraints.max_slope_degrees, Some(8.0));
+    assert_eq!(location.constraints.elevation, Some(Vec2::new(80.0, 350.0)));
+    assert_eq!(location.constraints.river_within, None);
+    assert!(location.constraints.road_access);
+    assert!(matches!(&anchors(&world)[..], [Anchor::Plateau { .. }]));
+}
+
+#[test]
+fn roads_and_rivers_are_chains_and_landmarks_are_points() {
+    let road = |next: Value| json!([{ "id": "road", "params": { "next": next, "width": 8.0 } }]);
+    let scene = scene(
+        json!([0, 1, 2, 3, 4]),
+        json!([
+            node("a", [0.0, 100.0, 0.0], road(json!("b"))),
+            node("b", [100.0, 110.0, 0.0], road(json!("c"))),
+            node("c", [200.0, 120.0, 50.0], road(Value::Null)),
+            node("spring", [0.0; 3], json!([{ "id": "river", "params": { "next": null, "width": 30.0 } }])),
+            node("Grey Peak", [500.0, 900.0, 500.0], json!([{ "id": "landmark", "params": { "kind": "peak" } }])),
+        ]),
+    );
+
+    let world = world();
+    let report = spawn_scene(&world, &scene, Transform::default());
+
+    let mut roads = Vec::new();
+    world.query::<&Road>().build().each(|road| roads.push(road.0.clone()));
+    assert_eq!(
+        roads,
+        vec![WorldPath {
+            name: "a".to_owned(),
+            points: vec![Vec3::new(0.0, 100.0, 0.0), Vec3::new(100.0, 110.0, 0.0), Vec3::new(200.0, 120.0, 50.0)],
+            width: 8.0,
+        }]
+    );
+
+    let mut rivers = 0;
+    world.query::<&River>().build().each(|_| rivers += 1);
+    assert_eq!(rivers, 0);
+    assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+    assert!(report.issues[0].message.contains("at least two nodes"));
+
+    assert_eq!(
+        world.entity_from_id(report.entities[4]).cloned::<&Landmark>(),
+        Landmark { name: "Grey Peak".to_owned(), kind: "peak".to_owned(), position: Vec3::new(500.0, 900.0, 500.0) }
+    );
 }

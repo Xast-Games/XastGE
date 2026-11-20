@@ -19,6 +19,6 @@ pub use source::{FlatSource, HeightSource, LandscapeSettings, LandscapeSource, N
 pub use splat::{Band, LAYERS, SplatRules, SplatWeights};
 pub use tile::{Edge, HeightBounds, PlacedObject, TileCoord, TileData};
 pub use world::{
-    Anchor, Bounds, Constraints, Footprint, Landmark, LandmarkKind, Location, Region, TerrainAnchor, Violation, WorldDefinition,
-    WorldIssue, WorldLoadError, WorldPath, WorldTerrain,
+    Anchor, Constraints, Footprint, Landmark, Location, River, Road, TerrainAnchor, Violation, WorldDefinition, WorldLoadError,
+    WorldPath, WorldTerrain,
 };
